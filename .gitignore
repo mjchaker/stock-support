@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.stock_cache.json
+tsx_recommendations.xlsx
+tsx_symbols_*.xlsx
