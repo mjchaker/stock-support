@@ -24,6 +24,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
 from support_handler import stock_handler
+import recommender
 
 
 class StockAnalyzerGUI:
@@ -325,6 +326,16 @@ class StockAnalyzerGUI:
         analysis_container = ttk.Frame(self.analysis_frame)
         analysis_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Scoring verdict (rules-based, see recommender.py)
+        verdict_frame = ttk.LabelFrame(analysis_container, text="Verdict", padding="10")
+        verdict_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.verdict_label = ttk.Label(verdict_frame, text="Verdict: -", font=("Arial", 12, "bold"))
+        self.verdict_label.pack(anchor=tk.W, pady=2)
+        
+        self.verdict_text = scrolledtext.ScrolledText(verdict_frame, height=8, wrap=tk.WORD, font=("Courier", 9))
+        self.verdict_text.pack(fill=tk.X, pady=2)
+        
         # Analyst Recommendations
         analyst_frame = ttk.LabelFrame(analysis_container, text="Analyst Recommendations", padding="10")
         analyst_frame.pack(fill=tk.X, pady=(0, 10))
@@ -467,6 +478,12 @@ Business Summary:
             self.debt_equity_label.config(text=f"Debt to Equity: {self._format_ratio(info.get('debtToEquity'))}")
             
             # Update Analysis tab
+            score = recommender.score_stock(symbol, info)
+            score_txt = "N/A" if score.composite is None else f"{score.composite:.1f}/100"
+            self.verdict_label.config(text=f"Verdict: {score.verdict}   (score {score_txt})")
+            self.verdict_text.delete(1.0, tk.END)
+            self.verdict_text.insert(tk.END, recommender.format_detail(score) + "\n\n" + recommender.DISCLAIMER)
+            
             self.recommendation_label.config(text=f"Recommendation: {info.get('recommendationKey', 'N/A').upper()}")
             self.target_mean_label.config(text=f"Target Mean Price: ${self._format_price(info.get('targetMeanPrice'))}")
             self.target_high_label.config(text=f"Target High Price: ${self._format_price(info.get('targetHighPrice'))}")

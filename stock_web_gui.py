@@ -57,6 +57,7 @@ API Endpoints:
     GET /: Main interface page with HTML form and results display
     POST /analyze/: AJAX endpoint for stock analysis (expects 'symbol' parameter)
     POST /export/: AJAX endpoint for TSX symbol export to Excel
+    POST /recommend/: AJAX endpoint that scores and ranks a list of symbols
 
 Browser Compatibility:
     - Modern browsers with JavaScript enabled
@@ -77,6 +78,7 @@ from django.urls import path
 from django.core.wsgi import get_wsgi_application
 from django.template import Template, Context
 from support_handler import stock_handler
+import recommender
 
 
 # Configure Django settings programmatically
@@ -177,6 +179,14 @@ def index(request):
             #results { 
                 display: none; /* Hidden until first analysis is performed */
             }
+            #ranking { 
+                display: none; /* Hidden until a ranking has been requested */
+            }
+            .verdict-badge { font-size: 1.1rem; }
+            .pillar-bar { height: 8px; }
+            .reason-plus { color: #198754; }
+            .reason-minus { color: #dc3545; }
+            .flag-critical { color: #dc3545; font-weight: bold; }
         </style>
     </head>
     <body>
@@ -225,6 +235,19 @@ def index(request):
                                 Export All TSX Symbols
                             </button>
                             
+                            <hr>
+                            
+                            <h6>Score &amp; Rank:</h6>
+                            <div class="mb-2">
+                                <textarea class="form-control" id="rankSymbols" rows="3" placeholder="Symbols, comma or space separated">CEU.TO, CCO.TO, TSAT.TO</textarea>
+                            </div>
+                            <div class="mb-2">
+                                <input type="number" class="form-control" id="rankCapital" placeholder="Capital to allocate (optional)" min="0" step="100">
+                            </div>
+                            <button class="btn btn-warning w-100" id="rankBtn" onclick="rankStocks()">
+                                Rank These Stocks
+                            </button>
+                            
                             <div id="messages" class="mt-3"></div>
                         </div>
                     </div>
@@ -232,7 +255,49 @@ def index(request):
                 
                 <!-- Results Panel -->
                 <div class="col-md-8">
+                    <!-- Ranking table (from the Score & Rank form) -->
+                    <div id="ranking" class="card stock-info-card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Ranking</h5>
+                            <small class="text-muted">Composite score 0-100; click a row to analyze it</small>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover align-middle mb-0" id="rankingTable">
+                                    <thead>
+                                        <tr><th>#</th><th>Symbol</th><th>Name</th><th>Score</th><th>Verdict</th><th>Value</th><th>Quality</th><th>Growth</th><th>Momentum</th><th>Analyst</th><th>Dividend</th><th>Red flags</th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div id="allocation" class="mt-3"></div>
+                            <p class="text-muted small mt-3 mb-0" id="rankingDisclaimer"></p>
+                        </div>
+                    </div>
+
                     <div id="results">
+                        <!-- Verdict -->
+                        <div class="card stock-info-card border-warning">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">Verdict</h5>
+                                <span class="badge verdict-badge bg-secondary" id="verdictBadge">-</span>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-5">
+                                        <p class="mb-1">Composite score: <span class="metric-value" id="verdictScore">-</span> / 100</p>
+                                        <p class="mb-2 text-muted small">Data coverage: <span id="verdictCoverage">-</span></p>
+                                        <div id="verdictPillars"></div>
+                                    </div>
+                                    <div class="col-md-7">
+                                        <h6>Why</h6>
+                                        <ul class="mb-2 small" id="verdictReasons"></ul>
+                                        <h6>Red flags</h6>
+                                        <ul class="mb-0 small" id="verdictFlags"></ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         <!-- Company Information -->
                         <div class="card stock-info-card">
                             <div class="card-header">
@@ -367,6 +432,7 @@ def index(request):
                         if (data.success) {
                             // Update the display with received stock data
                             updateDisplay(data.info, symbol);
+                            updateVerdict(data.score);
                             $('#results').show();  // Make results section visible
                             showMessage('Analysis completed successfully!', 'success');
                         } else {
@@ -420,6 +486,118 @@ def index(request):
                     error: function() {
                         showMessage('Export failed. Please try again.', 'error');
                     }
+                });
+            }
+            
+            /**
+             * Render the scoring verdict card for a single stock
+             * @param {Object} score - Serialized recommender.StockScore
+             */
+            function updateVerdict(score) {
+                if (!score) { return; }
+                const colors = {'Strong Buy': 'bg-success', 'Buy': 'bg-primary', 'Hold': 'bg-warning text-dark',
+                                'Avoid': 'bg-danger', 'Insufficient data': 'bg-secondary'};
+                $('#verdictBadge').text(score.verdict).attr('class', 'badge verdict-badge ' + (colors[score.verdict] || 'bg-secondary'));
+                $('#verdictScore').text(score.composite === null ? 'N/A' : score.composite.toFixed(1));
+                $('#verdictCoverage').text(Math.round(score.coverage * 100) + '%');
+                
+                let pillars = '';
+                for (const [name, value] of Object.entries(score.pillars || {})) {
+                    const v = value === null ? 0 : value;
+                    const label = name.charAt(0).toUpperCase() + name.slice(1);
+                    pillars += '<div class="d-flex align-items-center small mb-1">' +
+                        '<span style="width:80px">' + label + '</span>' +
+                        '<div class="progress flex-grow-1 pillar-bar"><div class="progress-bar" style="width:' + v + '%"></div></div>' +
+                        '<span style="width:36px" class="text-end">' + (value === null ? '--' : Math.round(value)) + '</span></div>';
+                }
+                $('#verdictPillars').html(pillars);
+                
+                const reasons = (score.reasons || []).map(function(r) {
+                    const cls = r.startsWith('+') ? 'reason-plus' : 'reason-minus';
+                    return '<li class="' + cls + '">' + escapeHtml(r) + '</li>';
+                });
+                $('#verdictReasons').html(reasons.length ? reasons.join('') : '<li class="text-muted">Not enough data</li>');
+                
+                const flags = (score.red_flags || []).map(function(f) {
+                    return '<li class="' + (f.critical ? 'flag-critical' : '') + '">' + escapeHtml(f.message) + '</li>';
+                });
+                $('#verdictFlags').html(flags.length ? flags.join('') : '<li class="text-muted">None detected</li>');
+            }
+            
+            /**
+             * Score and rank the symbols typed into the Score & Rank box
+             */
+            function rankStocks() {
+                const symbols = $('#rankSymbols').val().trim();
+                if (!symbols) {
+                    showMessage('Enter at least one symbol to rank', 'error');
+                    return;
+                }
+                $('#rankBtn').prop('disabled', true).text('Ranking...');
+                showMessage('Fetching and scoring ' + symbols.split(/[\s,]+/).filter(Boolean).length + ' symbols...', 'info');
+                
+                $.ajax({
+                    url: '/recommend/',
+                    method: 'POST',
+                    data: {
+                        'symbols': symbols,
+                        'capital': $('#rankCapital').val(),
+                        'csrfmiddlewaretoken': '{{ csrf_token }}'
+                    },
+                    success: function(data) {
+                        if (data.success) {
+                            renderRanking(data.scores, data.allocation, data.disclaimer);
+                            showMessage('Ranked ' + data.scores.length + ' symbols', 'success');
+                        } else {
+                            showMessage('Ranking failed: ' + data.error, 'error');
+                        }
+                    },
+                    error: function() {
+                        showMessage('Ranking failed. Please try again.', 'error');
+                    },
+                    complete: function() {
+                        $('#rankBtn').prop('disabled', false).text('Rank These Stocks');
+                    }
+                });
+            }
+            
+            function renderRanking(scores, allocation, disclaimer) {
+                const badge = {'Strong Buy': 'success', 'Buy': 'primary', 'Hold': 'warning text-dark',
+                               'Avoid': 'danger', 'Insufficient data': 'secondary'};
+                const pillar = function(s, k) { const v = s.pillars ? s.pillars[k] : null; return v === null || v === undefined ? '--' : Math.round(v); };
+                let rows = '';
+                scores.forEach(function(s, i) {
+                    const flags = (s.red_flags || []).map(function(f) { return escapeHtml(f.message); }).join('; ');
+                    const score = s.composite === null ? '--' : s.composite.toFixed(1);
+                    rows += '<tr style="cursor:pointer" onclick="quickAnalyze(\'' + escapeHtml(s.symbol) + '\')">' +
+                        '<td>' + (i + 1) + '</td><td><strong>' + escapeHtml(s.symbol) + '</strong></td>' +
+                        '<td class="small">' + escapeHtml(s.name || s.error || '') + '</td>' +
+                        '<td class="metric-value">' + score + '</td>' +
+                        '<td><span class="badge bg-' + (badge[s.verdict] || 'secondary') + '">' + escapeHtml(s.verdict) + '</span></td>' +
+                        '<td>' + pillar(s, 'value') + '</td><td>' + pillar(s, 'quality') + '</td><td>' + pillar(s, 'growth') + '</td>' +
+                        '<td>' + pillar(s, 'momentum') + '</td><td>' + pillar(s, 'analyst') + '</td><td>' + pillar(s, 'dividend') + '</td>' +
+                        '<td class="small text-danger">' + flags + '</td></tr>';
+                });
+                $('#rankingTable tbody').html(rows);
+                
+                let alloc = '';
+                if (allocation && allocation.length) {
+                    alloc = '<h6>Suggested allocation (buys only, max 20% per name)</h6>' +
+                        '<table class="table table-sm mb-0"><thead><tr><th>Symbol</th><th>Weight</th><th>Shares</th><th>Amount</th></tr></thead><tbody>';
+                    allocation.forEach(function(row) {
+                        alloc += '<tr><td>' + escapeHtml(row.symbol) + '</td><td>' + (row.weight * 100).toFixed(1) + '%</td>' +
+                            '<td>' + (row.shares === null ? '' : row.shares) + '</td><td>$' + row.amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</td></tr>';
+                    });
+                    alloc += '</tbody></table>';
+                }
+                $('#allocation').html(alloc);
+                $('#rankingDisclaimer').text(disclaimer || '');
+                $('#ranking').show();
+            }
+            
+            function escapeHtml(text) {
+                return String(text).replace(/[&<>"']/g, function(c) {
+                    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
                 });
             }
             
@@ -589,11 +767,13 @@ def analyze_stock(request):
         try:
             # Get stock information using the stock handler
             info = stock_handler_instance.get_company_info(symbol)
+            score = recommender.score_stock(symbol, info)
             
             return JsonResponse({
                 'success': True,
                 'info': info,
-                'symbol': symbol
+                'symbol': symbol,
+                'score': score.to_dict()
             })
             
         except Exception as e:
@@ -636,11 +816,52 @@ def export_symbols(request):
     return JsonResponse({'success': False, 'error': 'Invalid request method'})
 
 
+def recommend_stocks(request):
+    """AJAX endpoint that scores and ranks a list of symbols.
+    
+    POST fields:
+        symbols: comma/space separated symbols (defaults to the built-in watchlist)
+        capital: optional cash amount; when given, a suggested allocation is returned
+        
+    Returns:
+        JsonResponse: success flag, ranked list of serialized StockScore objects,
+        optional allocation rows and the standard disclaimer.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Invalid request method'})
+    
+    raw = request.POST.get('symbols', '')
+    symbols = [s for s in raw.replace(',', ' ').split() if s]
+    if len(symbols) > 200:
+        return JsonResponse({'success': False, 'error': 'Please rank at most 200 symbols at a time'})
+    
+    capital = None
+    raw_capital = request.POST.get('capital', '').strip()
+    if raw_capital:
+        try:
+            capital = float(raw_capital)
+        except ValueError:
+            return JsonResponse({'success': False, 'error': 'Capital must be a number'})
+    
+    try:
+        ranked = stock_handler_instance.recommend(symbols or None, cache_path='.stock_cache.json')
+        payload = {
+            'success': True,
+            'scores': [s.to_dict() for s in ranked],
+            'allocation': recommender.suggest_allocation(ranked, capital) if capital else [],
+            'disclaimer': recommender.DISCLAIMER,
+        }
+        return JsonResponse(payload)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
 # URL patterns
 urlpatterns = [
     path('', index, name='index'),
     path('analyze/', analyze_stock, name='analyze'),
     path('export/', export_symbols, name='export'),
+    path('recommend/', recommend_stocks, name='recommend'),
 ]
 
 

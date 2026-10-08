@@ -4,6 +4,8 @@ from pprint import pprint
 import requests
 import os
 
+import recommender
+
 class stock_handler:
     def __init__(self):
         self.stock_symbol_list = "https://www.tsx.com/files/trading/interlisted-companies.txt"
@@ -49,11 +51,35 @@ class stock_handler:
         company = yf.Ticker(symbol)
         info = company.info
         return info
+
+    def score_symbol(self, symbol):
+        """Fetch one symbol and return its recommender.StockScore."""
+        symbol = recommender.normalize_symbol(symbol)
+        try:
+            info = self.get_company_info(symbol)
+        except Exception as exc:
+            return recommender.score_stock(symbol, None, str(exc))
+        return recommender.score_stock(symbol, info)
+
+    def recommend(self, symbols=None, workers=8, cache_path=None, progress=None):
+        """Score and rank a list of symbols (default: the built-in watchlist).
+
+        Returns a list of recommender.StockScore, best first.  Pass the
+        output of get_all_stock_symbols() to scan the whole TSX.
+        """
+        if not symbols:
+            symbols = recommender.DEFAULT_WATCHLIST
+        return recommender.screen(
+            symbols,
+            fetcher=self.get_company_info,
+            workers=workers,
+            cache_path=cache_path,
+            progress=progress,
+        )
     
     def print_stock_info(self, stock):
         info = self.get_company_info(stock)
-        print(info)
-        print(f"========== {info['longName']} ({stock}) ==========")
+        print(f"========== {info.get('longName', stock)} ({stock}) ==========")
         
         try:
             # Company Overview
@@ -110,8 +136,11 @@ class stock_handler:
             print(f"Current Price: {info.get('currentPrice')}")
             print(f"52-Week High: {info.get('fiftyTwoWeekHigh')}")
             print(f"52-Week Low: {info.get('fiftyTwoWeekLow')}")
-        except:
-            print("No Stock")
+            # Verdict
+            print("\n🎯 Verdict:")
+            print(recommender.format_detail(recommender.score_stock(stock, info)))
+        except Exception as exc:
+            print(f"No Stock ({exc})")
             
     
     def analyze_etf(self, ticker):
@@ -148,7 +177,7 @@ class stock_handler:
         print(f"Volume: {info.get('volume')}")
         print(f"Average Volume: {info.get('averageVolume')}")
     
-    def should_buy_etf(info):
+    def should_buy_etf(self, info):
         if info.get('expenseRatio') and info['expenseRatio'] < 0.2:
             if info.get('totalAssets') and info['totalAssets'] > 1_000_000_000:
                 if info.get('morningStarOverallRating') and info['morningStarOverallRating'] >= 4:
@@ -157,5 +186,5 @@ class stock_handler:
         print("\n⚠️ This ETF may not meet best-in-class criteria. Investigate further.")
 
         
-    def get_assets2liabilities():
+    def get_assets2liabilities(self):
         pass
